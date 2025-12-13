@@ -21,6 +21,7 @@ class TS2Vec:
         batch_size=16,
         max_train_length=None,
         temporal_unit=0,
+        max_temporal_length=1000,
         after_iter_callback=None,
         after_epoch_callback=None
     ):
@@ -36,6 +37,7 @@ class TS2Vec:
             batch_size (int): The batch size.
             max_train_length (Union[int, NoneType]): The maximum allowed sequence length for training. For sequence with a length greater than <max_train_length>, it would be cropped into some sequences, each of which has a length less than <max_train_length>.
             temporal_unit (int): The minimum unit to perform temporal contrast. When training on a very long sequence, this param helps to reduce the cost of time and memory.
+            max_temporal_length (int): Maximum temporal length for temporal contrastive loss computation. For sequences longer than this, random sampling will be applied to reduce memory usage. Defaults to 1000.
             after_iter_callback (Union[Callable, NoneType]): A callback function that would be called after each iteration.
             after_epoch_callback (Union[Callable, NoneType]): A callback function that would be called after each epoch.
         '''
@@ -46,6 +48,7 @@ class TS2Vec:
         self.batch_size = batch_size
         self.max_train_length = max_train_length
         self.temporal_unit = temporal_unit
+        self.max_temporal_length = max_temporal_length
         
         self._net = TSEncoder(input_dims=input_dims, output_dims=output_dims, hidden_dims=hidden_dims, depth=depth).to(self.device)
         self.net = torch.optim.swa_utils.AveragedModel(self._net)
@@ -74,10 +77,13 @@ class TS2Vec:
         if n_iters is None and n_epochs is None:
             n_iters = 200 if train_data.size <= 100000 else 600  # default param for n_iters
         
+        original_shape = train_data.shape
         if self.max_train_length is not None:
             sections = train_data.shape[1] // self.max_train_length
             if sections >= 2:
                 train_data = np.concatenate(split_with_nan(train_data, sections, axis=1), axis=0)
+                if verbose:
+                    print(f"  序列长度 {original_shape[1]} 超过 max_train_length ({self.max_train_length})，已分割为 {train_data.shape[0]} 个样本")
 
         temporal_missing = np.isnan(train_data).all(axis=-1).any(axis=0)
         if temporal_missing[0] or temporal_missing[-1]:
@@ -87,6 +93,15 @@ class TS2Vec:
         
         train_dataset = TensorDataset(torch.from_numpy(train_data).to(torch.float))
         train_loader = DataLoader(train_dataset, batch_size=min(self.batch_size, len(train_dataset)), shuffle=True, drop_last=True)
+        
+        if verbose:
+            print(f"  训练样本数: {len(train_dataset)}")
+            print(f"  批次大小: {min(self.batch_size, len(train_dataset))}")
+            print(f"  每个epoch的批次数: {len(train_loader)}")
+            if n_epochs is not None:
+                print(f"  总训练轮数: {n_epochs}")
+            elif n_iters is not None:
+                print(f"  总训练迭代数: {n_iters}")
         
         optimizer = torch.optim.AdamW(self._net.parameters(), lr=self.lr)
         
@@ -99,7 +114,11 @@ class TS2Vec:
             cum_loss = 0
             n_epoch_iters = 0
             
+            if verbose and self.n_epochs > 0:
+                print()  # 在epoch之间添加空行
+            
             interrupted = False
+            batch_idx = 0
             for batch in train_loader:
                 if n_iters is not None and self.n_iters >= n_iters:
                     interrupted = True
@@ -130,17 +149,29 @@ class TS2Vec:
                 loss = hierarchical_contrastive_loss(
                     out1,
                     out2,
-                    temporal_unit=self.temporal_unit
+                    temporal_unit=self.temporal_unit,
+                    max_temporal_length=self.max_temporal_length
                 )
                 
                 loss.backward()
                 optimizer.step()
                 self.net.update_parameters(self._net)
+                
+                # 清理显存缓存，避免内存碎片
+                if batch_idx % 10 == 0 and self.device.type == 'cuda':
+                    torch.cuda.empty_cache()
                     
                 cum_loss += loss.item()
                 n_epoch_iters += 1
+                batch_idx += 1
                 
                 self.n_iters += 1
+                
+                # 每10个batch或每个epoch的最后一个batch显示进度
+                if verbose and (batch_idx % 10 == 0 or batch_idx == len(train_loader)):
+                    progress = batch_idx / len(train_loader) * 100
+                    current_loss = cum_loss / n_epoch_iters
+                    print(f"\r  Epoch #{self.n_epochs} [{batch_idx}/{len(train_loader)}] ({progress:.1f}%) - loss: {current_loss:.6f}", end='', flush=True)
                 
                 if self.after_iter_callback is not None:
                     self.after_iter_callback(self, loss.item())
@@ -151,7 +182,7 @@ class TS2Vec:
             cum_loss /= n_epoch_iters
             loss_log.append(cum_loss)
             if verbose:
-                print(f"Epoch #{self.n_epochs}: loss={cum_loss}")
+                print(f"\r  Epoch #{self.n_epochs} [{len(train_loader)}/{len(train_loader)}] (100.0%) - loss: {cum_loss:.6f}")
             self.n_epochs += 1
             
             if self.after_epoch_callback is not None:
@@ -232,8 +263,11 @@ class TS2Vec:
         
         with torch.no_grad():
             output = []
-            for batch in loader:
+            for batch_idx, batch in enumerate(loader):
                 x = batch[0]
+                # 定期清理GPU缓存，避免内存碎片
+                if batch_idx % 5 == 0 and self.device.type == 'cuda':
+                    torch.cuda.empty_cache()
                 if sliding_length is not None:
                     reprs = []
                     if n_samples < batch_size:
@@ -293,9 +327,14 @@ class TS2Vec:
                     if encoding_window == 'full_series':
                         out = out.squeeze(1)
                         
+                # _eval_with_pooling 已经返回 CPU 张量，直接追加
                 output.append(out)
                 
             output = torch.cat(output, dim=0)
+            
+        # 最终清理GPU缓存
+        if self.device.type == 'cuda':
+            torch.cuda.empty_cache()
             
         self.net.train(org_training)
         return output.numpy()

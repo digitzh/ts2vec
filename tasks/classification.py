@@ -5,8 +5,11 @@ from sklearn.metrics import average_precision_score
 
 def eval_classification(model, train_data, train_labels, test_data, test_labels, eval_protocol='linear'):
     assert train_labels.ndim == 1 or train_labels.ndim == 2
-    train_repr = model.encode(train_data, encoding_window='full_series' if train_labels.ndim == 1 else None)
-    test_repr = model.encode(test_data, encoding_window='full_series' if train_labels.ndim == 1 else None)
+    # 使用更小的批次大小进行编码，避免内存溢出
+    # 对于评估，使用较小的批次大小（8或16）以减少内存使用
+    eval_batch_size = min(8, model.batch_size if hasattr(model, 'batch_size') else 8)
+    train_repr = model.encode(train_data, encoding_window='full_series' if train_labels.ndim == 1 else None, batch_size=eval_batch_size)
+    test_repr = model.encode(test_data, encoding_window='full_series' if train_labels.ndim == 1 else None, batch_size=eval_batch_size)
 
     if eval_protocol == 'linear':
         fit_clf = eval_protocols.fit_lr
@@ -29,10 +32,11 @@ def eval_classification(model, train_data, train_labels, test_data, test_labels,
     clf = fit_clf(train_repr, train_labels)
 
     acc = clf.score(test_repr, test_labels)
-    if eval_protocol == 'linear':
-        y_score = clf.predict_proba(test_repr)
-    else:
+    if eval_protocol == 'svm':
         y_score = clf.decision_function(test_repr)
+    else:
+        # linear (LogisticRegression) 和 knn (KNeighborsClassifier) 都使用 predict_proba
+        y_score = clf.predict_proba(test_repr)
     test_labels_onehot = label_binarize(test_labels, classes=np.arange(train_labels.max()+1))
     auprc = average_precision_score(test_labels_onehot, y_score)
     

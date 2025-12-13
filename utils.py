@@ -46,7 +46,10 @@ def split_with_nan(x, sections, axis=0):
 
 def take_per_row(A, indx, num_elem):
     all_indx = indx[:,None] + np.arange(num_elem)
-    return A[torch.arange(all_indx.shape[0])[:,None], all_indx]
+    # 确保索引tensor与输入tensor在同一设备上
+    device = A.device
+    row_indices = torch.arange(all_indx.shape[0], device=device)[:,None]
+    return A[row_indices, all_indx]
 
 def centerize_vary_length_series(x):
     prefix_zeros = np.argmax(~np.isnan(x).all(axis=-1), axis=1)

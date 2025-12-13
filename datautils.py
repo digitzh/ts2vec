@@ -196,3 +196,175 @@ def gen_ano_train_data(all_train_data):
         pretrain_data.append(train_data)
     pretrain_data = np.expand_dims(np.stack(pretrain_data), 2)
     return pretrain_data
+
+
+def load_ottawa(dataset='ottawa', train_ratio=0.8, segment_length=None, segment_stride=None, random_seed=42):
+    """
+    加载Ottawa轴承故障数据集
+    
+    参数:
+        dataset: 数据集名称（默认'ottawa'，实际不使用）
+        train_ratio: 训练集比例（默认0.8）
+        segment_length: 如果指定，将每个长序列分段为指定长度的子序列
+        segment_stride: 分段时的步长，如果为None则等于segment_length（无重叠）
+        random_seed: 随机种子，用于确保可重复性（默认42）
+    
+    返回:
+        train_data: (n_train_instances, n_timestamps, n_features) 训练数据
+        train_labels: (n_train_instances,) 训练标签
+        test_data: (n_test_instances, n_timestamps, n_features) 测试数据
+        test_labels: (n_test_instances,) 测试标签
+    """
+    # 设置随机种子以确保可重复性
+    np.random.seed(random_seed)
+    
+    base_dir = 'datasets/csv'
+    
+    # 定义类别映射：H=0, I=1, O=2, B=3, C=4
+    class_mapping = {
+        'H': 0,  # Healthy
+        'I': 1,  # Inner Race Faults
+        'O': 2,  # Outer Race Faults
+        'B': 3,  # Ball Faults
+        'C': 4   # Cage Faults
+    }
+    
+    # 定义类别文件夹
+    class_folders = {
+        'H': '1_Healthy',
+        'I': '2_Inner_Race_Faults',
+        'O': '3_Outer_Race_Faults',
+        'B': '4_Ball_Faults',
+        'C': '5_Cage_Faults'
+    }
+    
+    all_data = []
+    all_labels = []
+    
+    # 遍历所有类别
+    for class_code, class_folder in class_folders.items():
+        folder_path = os.path.join(base_dir, class_folder)
+        if not os.path.exists(folder_path):
+            continue
+            
+        # 获取该类别下的所有CSV文件
+        csv_files = [f for f in os.listdir(folder_path) if f.endswith('.csv')]
+        csv_files.sort()  # 排序以确保一致性
+        
+        # 为每个文件加载数据
+        for csv_file in csv_files:
+            file_path = os.path.join(folder_path, csv_file)
+            try:
+                # 读取CSV文件（跳过标题行）
+                df = pd.read_csv(file_path, header=0)
+                
+                # 提取数据（5列：加速度、声学、转速、负载、温度差）
+                data = df.values.astype(np.float64)
+                
+                # 如果指定了分段长度，将长序列分段
+                if segment_length is not None:
+                    stride = segment_stride if segment_stride is not None else segment_length
+                    for i in range(0, len(data) - segment_length + 1, stride):
+                        segment = data[i:i+segment_length]
+                        all_data.append(segment)
+                        all_labels.append(class_mapping[class_code])
+                else:
+                    # 使用完整序列
+                    all_data.append(data)
+                    all_labels.append(class_mapping[class_code])
+                    
+            except Exception as e:
+                print(f"警告: 无法加载文件 {file_path}: {e}")
+                continue
+    
+    if len(all_data) == 0:
+        raise ValueError("未找到任何数据文件，请检查数据集路径")
+    
+    # 转换为numpy数组
+    # 如果所有序列长度相同，直接stack；否则需要padding
+    lengths = [len(d) for d in all_data]
+    max_length = max(lengths)
+    min_length = min(lengths)
+    
+    if max_length == min_length:
+        # 所有序列长度相同
+        all_data = np.array(all_data)  # (n_instances, n_timestamps, n_features)
+    else:
+        # 需要padding到最大长度
+        print(f"警告: 序列长度不一致 (最小: {min_length}, 最大: {max_length})，将padding到最大长度")
+        padded_data = []
+        for d in all_data:
+            if len(d) < max_length:
+                # 使用nan padding
+                padding = np.full((max_length - len(d), d.shape[1]), np.nan)
+                d = np.vstack([d, padding])
+            padded_data.append(d)
+        all_data = np.array(padded_data)
+    
+    all_labels = np.array(all_labels)
+    
+    # 数据标准化
+    # 在整个数据集上计算均值和标准差（忽略nan值）
+    data_flat = all_data.reshape(-1, all_data.shape[-1])
+    scaler = StandardScaler()
+    scaler.fit(data_flat[~np.isnan(data_flat).any(axis=1)])
+    
+    # 标准化每个样本
+    for i in range(len(all_data)):
+        valid_mask = ~np.isnan(all_data[i]).any(axis=1)
+        if valid_mask.sum() > 0:
+            all_data[i][valid_mask] = scaler.transform(all_data[i][valid_mask])
+    
+    # 划分训练集和测试集
+    # 按类别分层划分
+    train_data_list = []
+    train_labels_list = []
+    test_data_list = []
+    test_labels_list = []
+    
+    for class_id in range(len(class_mapping)):
+        class_mask = all_labels == class_id
+        class_data = all_data[class_mask]
+        class_labels = all_labels[class_mask]
+        
+        n_samples = len(class_data)
+        n_train = int(n_samples * train_ratio)
+        
+        # 随机打乱
+        indices = np.arange(n_samples)
+        np.random.shuffle(indices)
+        
+        train_indices = indices[:n_train]
+        test_indices = indices[n_train:]
+        
+        train_data_list.append(class_data[train_indices])
+        train_labels_list.append(class_labels[train_indices])
+        test_data_list.append(class_data[test_indices])
+        test_labels_list.append(class_labels[test_indices])
+    
+    # 合并所有类别的数据
+    train_data = np.concatenate(train_data_list, axis=0)
+    train_labels = np.concatenate(train_labels_list, axis=0)
+    test_data = np.concatenate(test_data_list, axis=0)
+    test_labels = np.concatenate(test_labels_list, axis=0)
+    
+    # 再次打乱训练集和测试集
+    train_indices = np.arange(len(train_data))
+    test_indices = np.arange(len(test_data))
+    np.random.shuffle(train_indices)
+    np.random.shuffle(test_indices)
+    
+    train_data = train_data[train_indices]
+    train_labels = train_labels[train_indices]
+    test_data = test_data[test_indices]
+    test_labels = test_labels[test_indices]
+    
+    print(f"数据集加载完成:")
+    print(f"  训练集: {len(train_data)} 个样本")
+    print(f"  测试集: {len(test_data)} 个样本")
+    print(f"  序列长度: {train_data.shape[1]}")
+    print(f"  特征数: {train_data.shape[2]}")
+    print(f"  类别数: {len(class_mapping)}")
+    print(f"  类别分布 - 训练集: {np.bincount(train_labels)}, 测试集: {np.bincount(test_labels)}")
+    
+    return train_data, train_labels, test_data, test_labels

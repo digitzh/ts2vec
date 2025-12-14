@@ -50,14 +50,15 @@ def temporal_contrastive_loss(z1, z2, max_temporal_length=1000):
     
     Args:
         z1, z2: 形状为 (B, T, C) 的张量
-        max_temporal_length: 最大时间步数，超过此长度将进行采样以减少内存使用
+        max_temporal_length: 最大时间步数，超过此长度将进行采样以减少内存使用。
+                            如果设置为 None，则不进行采样限制（适用于显存充足的情况）
     """
     B, T = z1.size(0), z1.size(1)
     if T == 1:
         return z1.new_tensor(0.)
     
-    # 如果序列太长，进行采样以减少内存使用
-    if T > max_temporal_length:
+    # 如果设置了 max_temporal_length 且序列太长，进行采样以减少内存使用
+    if max_temporal_length is not None and T > max_temporal_length:
         # 随机采样 max_temporal_length 个时间步
         indices = torch.randperm(T, device=z1.device)[:max_temporal_length].sort()[0]
         z1 = z1[:, indices]

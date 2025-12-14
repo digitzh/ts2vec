@@ -263,11 +263,8 @@ class TS2Vec:
         
         with torch.no_grad():
             output = []
-            for batch_idx, batch in enumerate(loader):
+            for batch in loader:
                 x = batch[0]
-                # 定期清理GPU缓存，避免内存碎片
-                if batch_idx % 5 == 0 and self.device.type == 'cuda':
-                    torch.cuda.empty_cache()
                 if sliding_length is not None:
                     reprs = []
                     if n_samples < batch_size:
@@ -327,14 +324,9 @@ class TS2Vec:
                     if encoding_window == 'full_series':
                         out = out.squeeze(1)
                         
-                # _eval_with_pooling 已经返回 CPU 张量，直接追加
                 output.append(out)
                 
             output = torch.cat(output, dim=0)
-            
-        # 最终清理GPU缓存
-        if self.device.type == 'cuda':
-            torch.cuda.empty_cache()
             
         self.net.train(org_training)
         return output.numpy()

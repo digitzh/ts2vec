@@ -198,7 +198,7 @@ def gen_ano_train_data(all_train_data):
     return pretrain_data
 
 
-def load_ottawa(dataset='ottawa', train_ratio=0.8, segment_length=None, segment_stride=None, random_seed=42):
+def load_ottawa(dataset='ottawa', train_ratio=0.8, segment_length=None, segment_stride=None, random_seed=42, feature_columns=None):
     """
     加载Ottawa轴承故障数据集
     
@@ -208,6 +208,11 @@ def load_ottawa(dataset='ottawa', train_ratio=0.8, segment_length=None, segment_
         segment_length: 如果指定，将每个长序列分段为指定长度的子序列
         segment_stride: 分段时的步长，如果为None则等于segment_length（无重叠）
         random_seed: 随机种子，用于确保可重复性（默认42）
+        feature_columns: 要使用的特征列，可以是：
+            - None: 使用所有5个特征（默认）
+            - 字符串: 'accelerometer', 'acoustic', 'speed', 'load', 'temperature' 之一
+            - 整数列表: 列索引列表，如 [0] 表示只使用加速度，[0,1] 表示使用加速度和声学
+            - 字符串列表: 列名列表，如 ['Accelerometer', 'Acoustic']
     
     返回:
         train_data: (n_train_instances, n_timestamps, n_features) 训练数据
@@ -219,6 +224,54 @@ def load_ottawa(dataset='ottawa', train_ratio=0.8, segment_length=None, segment_
     np.random.seed(random_seed)
     
     base_dir = 'datasets/csv'
+    
+    # 定义特征列映射
+    feature_mapping = {
+        'accelerometer': 0,
+        'acoustic': 1,
+        'speed': 2,
+        'load': 3,
+        'temperature': 4,
+        'Accelerometer': 0,
+        'Acoustic': 1,
+        'Speed': 2,
+        'Load': 3,
+        'Temperature Difference': 4,
+        'Temperature': 4
+    }
+    
+    # 解析 feature_columns 参数
+    column_indices = None
+    if feature_columns is not None:
+        if isinstance(feature_columns, str):
+            # 单个字符串，转换为列表
+            feature_columns = [feature_columns]
+        
+        if isinstance(feature_columns, list):
+            if len(feature_columns) == 0:
+                raise ValueError("feature_columns 不能为空列表")
+            
+            # 检查第一个元素是字符串还是整数
+            if isinstance(feature_columns[0], str):
+                # 字符串列表，转换为列索引
+                column_indices = []
+                for col in feature_columns:
+                    col_lower = col.lower()
+                    if col_lower in feature_mapping:
+                        column_indices.append(feature_mapping[col_lower])
+                    elif col in feature_mapping:
+                        column_indices.append(feature_mapping[col])
+                    else:
+                        raise ValueError(f"未知的特征列名: {col}。可用选项: {list(set([k for k in feature_mapping.keys() if k.lower() in ['accelerometer', 'acoustic', 'speed', 'load', 'temperature']]))}")
+            elif isinstance(feature_columns[0], int):
+                # 整数列表，直接使用
+                column_indices = feature_columns
+                if not all(0 <= idx < 5 for idx in column_indices):
+                    raise ValueError(f"列索引必须在 [0, 4] 范围内，当前值: {column_indices}")
+            else:
+                raise ValueError(f"feature_columns 的元素必须是字符串或整数，当前类型: {type(feature_columns[0])}")
+        else:
+            raise ValueError(f"feature_columns 必须是字符串、整数列表或字符串列表，当前类型: {type(feature_columns)}")
     
     # 定义类别映射：H=0, I=1, O=2, B=3, C=4
     class_mapping = {
@@ -260,6 +313,10 @@ def load_ottawa(dataset='ottawa', train_ratio=0.8, segment_length=None, segment_
                 
                 # 提取数据（5列：加速度、声学、转速、负载、温度差）
                 data = df.values.astype(np.float64)
+                
+                # 如果指定了特征列，只选择这些列
+                if column_indices is not None:
+                    data = data[:, column_indices]
                 
                 # 如果指定了分段长度，将长序列分段
                 if segment_length is not None:
@@ -359,11 +416,19 @@ def load_ottawa(dataset='ottawa', train_ratio=0.8, segment_length=None, segment_
     test_data = test_data[test_indices]
     test_labels = test_labels[test_indices]
     
+    # 生成特征名称用于显示
+    feature_names = ['加速度', '声学', '转速', '负载', '温度差']
+    if column_indices is not None:
+        selected_features = [feature_names[i] for i in column_indices]
+        feature_info = f"{len(column_indices)}个特征: {', '.join(selected_features)}"
+    else:
+        feature_info = f"5个特征: {', '.join(feature_names)}"
+    
     print(f"数据集加载完成:")
     print(f"  训练集: {len(train_data)} 个样本")
     print(f"  测试集: {len(test_data)} 个样本")
     print(f"  序列长度: {train_data.shape[1]}")
-    print(f"  特征数: {train_data.shape[2]}")
+    print(f"  特征数: {train_data.shape[2]} ({feature_info})")
     print(f"  类别数: {len(class_mapping)}")
     print(f"  类别分布 - 训练集: {np.bincount(train_labels)}, 测试集: {np.bincount(test_labels)}")
     

@@ -15,8 +15,8 @@ def test_load_ottawa():
     print("=" * 60)
     
     try:
-        # 测试基本加载
-        print("\n1. 测试基本数据加载...")
+        # 测试基本加载（所有特征）
+        print("\n1. 测试基本数据加载（所有特征）...")
         train_data, train_labels, test_data, test_labels = datautils.load_ottawa()
         
         # 检查数据形状
@@ -39,6 +39,30 @@ def test_load_ottawa():
         assert train_data.shape[2] == 5, "特征数应为5 (加速度、声学、转速、负载、温度差)"
         assert test_data.shape[2] == 5, "特征数应为5"
         print("  ✓ 数据维度检查通过")
+        
+        # 测试特征选择功能
+        print("\n2. 测试特征选择功能...")
+        
+        # 测试只使用加速度
+        print("  2.1 测试只使用加速度特征...")
+        train_data_acc, train_labels_acc, test_data_acc, test_labels_acc = datautils.load_ottawa(feature_columns='accelerometer')
+        assert train_data_acc.shape[2] == 1, "只使用加速度时特征数应为1"
+        assert test_data_acc.shape[2] == 1, "只使用加速度时特征数应为1"
+        print("    ✓ 加速度特征选择测试通过")
+        
+        # 测试使用多个特征（字符串列表）
+        print("  2.2 测试使用多个特征（加速度+声学）...")
+        train_data_multi, train_labels_multi, test_data_multi, test_labels_multi = datautils.load_ottawa(feature_columns=['accelerometer', 'acoustic'])
+        assert train_data_multi.shape[2] == 2, "使用加速度+声学时特征数应为2"
+        assert test_data_multi.shape[2] == 2, "使用加速度+声学时特征数应为2"
+        print("    ✓ 多特征选择测试通过")
+        
+        # 测试使用列索引
+        print("  2.3 测试使用列索引...")
+        train_data_idx, train_labels_idx, test_data_idx, test_labels_idx = datautils.load_ottawa(feature_columns=[0, 1, 2])
+        assert train_data_idx.shape[2] == 3, "使用列索引[0,1,2]时特征数应为3"
+        assert test_data_idx.shape[2] == 3, "使用列索引[0,1,2]时特征数应为3"
+        print("    ✓ 列索引选择测试通过")
         
         # 检查标签范围
         unique_labels = np.unique(np.concatenate([train_labels, test_labels]))

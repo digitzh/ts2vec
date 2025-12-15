@@ -1,7 +1,7 @@
 import numpy as np
 from . import _eval_protocols as eval_protocols
 from sklearn.preprocessing import label_binarize
-from sklearn.metrics import average_precision_score
+from sklearn.metrics import average_precision_score, f1_score
 
 def eval_classification(model, train_data, train_labels, test_data, test_labels, eval_protocol='linear'):
     assert train_labels.ndim == 1 or train_labels.ndim == 2
@@ -40,4 +40,9 @@ def eval_classification(model, train_data, train_labels, test_data, test_labels,
     test_labels_onehot = label_binarize(test_labels, classes=np.arange(train_labels.max()+1))
     auprc = average_precision_score(test_labels_onehot, y_score)
     
-    return y_score, { 'acc': acc, 'auprc': auprc }
+    # 计算F1-score（Macro和Weighted）
+    y_pred = clf.predict(test_repr)
+    f1_macro = f1_score(test_labels, y_pred, average='macro')
+    f1_weighted = f1_score(test_labels, y_pred, average='weighted')
+    
+    return y_score, { 'acc': acc, 'auprc': auprc, 'f1_macro': f1_macro, 'f1_weighted': f1_weighted }

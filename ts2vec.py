@@ -23,15 +23,17 @@ class TS2Vec:
         temporal_unit=0,
         max_temporal_length=1000,
         after_iter_callback=None,
-        after_epoch_callback=None
+        after_epoch_callback=None,
+        encoder_type='dilated_conv',
+        **encoder_kwargs
     ):
         ''' Initialize a TS2Vec model.
         
         Args:
             input_dims (int): The input dimension. For a univariate time series, this should be set to 1.
             output_dims (int): The representation dimension.
-            hidden_dims (int): The hidden dimension of the encoder.
-            depth (int): The number of hidden residual blocks in the encoder.
+            hidden_dims (int): The hidden dimension of the encoder (only used for dilated_conv encoder).
+            depth (int): The number of hidden residual blocks in the encoder (only used for dilated_conv encoder).
             device (int): The gpu used for training and inference.
             lr (int): The learning rate.
             batch_size (int): The batch size.
@@ -40,6 +42,8 @@ class TS2Vec:
             max_temporal_length (int): Maximum temporal length for temporal contrastive loss computation. For sequences longer than this, random sampling will be applied to reduce memory usage. Defaults to 1000.
             after_iter_callback (Union[Callable, NoneType]): A callback function that would be called after each iteration.
             after_epoch_callback (Union[Callable, NoneType]): A callback function that would be called after each epoch.
+            encoder_type (str): The type of encoder to use. Options: 'dilated_conv' (default), 'baseline', 'multiscale_wavelet'.
+            **encoder_kwargs: Additional arguments for the encoder (e.g., dropout, l2_reg, num_scales, etc.).
         '''
         
         super().__init__()
@@ -50,7 +54,14 @@ class TS2Vec:
         self.temporal_unit = temporal_unit
         self.max_temporal_length = max_temporal_length
         
-        self._net = TSEncoder(input_dims=input_dims, output_dims=output_dims, hidden_dims=hidden_dims, depth=depth).to(self.device)
+        self._net = TSEncoder(
+            input_dims=input_dims, 
+            output_dims=output_dims, 
+            hidden_dims=hidden_dims, 
+            depth=depth,
+            encoder_type=encoder_type,
+            **encoder_kwargs
+        ).to(self.device)
         self.net = torch.optim.swa_utils.AveragedModel(self._net)
         self.net.update_parameters(self._net)
         
@@ -145,6 +156,11 @@ class TS2Vec:
                 
                 out2 = self._net(take_per_row(x, crop_offset + crop_left, crop_eright - crop_left))
                 out2 = out2[:, :crop_l]
+                
+                # 确保out1和out2的时间步长度一致（处理卷积导致的长度差异）
+                min_len = min(out1.size(1), out2.size(1))
+                out1 = out1[:, -min_len:]
+                out2 = out2[:, :min_len]
                 
                 loss = hierarchical_contrastive_loss(
                     out1,
@@ -346,5 +362,42 @@ class TS2Vec:
             fn (str): filename.
         '''
         state_dict = torch.load(fn, map_location=self.device)
-        self.net.load_state_dict(state_dict)
+        
+        # 检测保存的模型的编码器类型
+        saved_encoder_type = None
+        if 'module.temporal_encoder.branches.0.conv.weight' in state_dict:
+            saved_encoder_type = 'multiscale_wavelet'
+        elif 'module.temporal_encoder.conv1.weight' in state_dict:
+            saved_encoder_type = 'baseline'
+        elif 'module.input_fc.weight' in state_dict:
+            saved_encoder_type = 'dilated_conv'
+        
+        # 检查当前模型的编码器类型是否与保存的模型匹配
+        if saved_encoder_type is not None:
+            # 获取实际模型的编码器类型（通过 _net）
+            current_encoder_type = self._net.encoder_type
+            
+            if saved_encoder_type != current_encoder_type:
+                raise RuntimeError(
+                    f"编码器类型不匹配！\n"
+                    f"  保存的模型使用: {saved_encoder_type}\n"
+                    f"  当前模型使用: {current_encoder_type}\n"
+                    f"  请在运行 eval.py 时指定正确的 --encoder-type 参数:\n"
+                    f"  --encoder-type {saved_encoder_type}"
+                )
+        
+        try:
+            self.net.load_state_dict(state_dict)
+        except RuntimeError as e:
+            # 如果加载失败且编码器类型不匹配，给出更友好的错误提示
+            if 'Missing key(s)' in str(e) or 'Unexpected key(s)' in str(e):
+                if saved_encoder_type is not None:
+                    raise RuntimeError(
+                        f"模型加载失败：编码器类型不匹配！\n"
+                        f"  保存的模型使用: {saved_encoder_type}\n"
+                        f"  当前模型使用: {self._net.encoder_type}\n"
+                        f"  请在运行 eval.py 时指定正确的 --encoder-type 参数:\n"
+                        f"  --encoder-type {saved_encoder_type}"
+                    ) from e
+            raise
     

@@ -37,8 +37,19 @@ if __name__ == '__main__':
     parser.add_argument('--save-every', type=int, default=None, help='Save the checkpoint every <save_every> iterations/epochs')
     parser.add_argument('--seed', type=int, default=None, help='The random seed')
     parser.add_argument('--max-threads', type=int, default=None, help='The maximum allowed number of threads used by this process')
-    parser.add_argument('--eval', action="store_true", help='Whether to perform evaluation after training')
+    parser.add_argument('--eval', action="store_true", help='Enable evaluation after training (default: enabled, use --no-eval to disable)')
+    parser.add_argument('--no-eval', dest='eval', action='store_false', help='Disable evaluation after training')
+    parser.set_defaults(eval=True)
     parser.add_argument('--irregular', type=float, default=0, help='The ratio of missing observations (defaults to 0)')
+    parser.add_argument('--encoder-type', type=str, default='dilated_conv', choices=['dilated_conv', 'baseline', 'multiscale_wavelet'], 
+                        help='The type of encoder to use (defaults to dilated_conv)')
+    parser.add_argument('--encoder-dropout', type=float, default=0.1, help='Dropout rate for temporal encoder (defaults to 0.1)')
+    parser.add_argument('--encoder-l2-reg', type=float, default=1e-4, help='L2 regularization coefficient for temporal encoder (defaults to 1e-4)')
+    parser.add_argument('--num-scales', type=int, default=4, help='Number of scales for multiscale_wavelet encoder (defaults to 4)')
+    parser.add_argument('--branch-channels', type=int, default=32, help='Number of channels per branch for multiscale_wavelet encoder (defaults to 32)')
+    parser.add_argument('--se-reduction', type=int, default=4, help='SE Block reduction ratio for multiscale_wavelet encoder (defaults to 4)')
+    parser.add_argument('--feature-columns', type=str, default=None, 
+                        help='Feature columns to use (comma-separated). Examples: "accelerometer" or "accelerometer,acoustic" or "0" or "0,1".')
     args = parser.parse_args()
     
     print("Dataset:", args.dataset)
@@ -95,6 +106,29 @@ if __name__ == '__main__':
             print(f'  注意: 系统检测到CUDA可用，但当前使用CPU。')
             print(f'        请检查--gpu参数设置（当前值: {args.gpu}）')
     
+    # 解析 feature_columns 参数
+    feature_columns = None
+    if args.feature_columns is not None:
+        # 支持逗号分隔的字符串，如 "accelerometer" 或 "accelerometer,acoustic" 或 "0" 或 "0,1"
+        parts = [p.strip() for p in args.feature_columns.split(',')]
+        if len(parts) == 1:
+            # 单个值，可能是字符串或整数
+            part = parts[0]
+            if part.isdigit():
+                # 是数字，转换为整数列表
+                feature_columns = [int(part)]
+            else:
+                # 是字符串，直接使用
+                feature_columns = part
+        else:
+            # 多个值，检查第一个是否是数字
+            if parts[0].isdigit():
+                # 都是数字，转换为整数列表
+                feature_columns = [int(p.strip()) for p in parts]
+            else:
+                # 都是字符串，使用字符串列表
+                feature_columns = parts
+    
     print('Loading data... ', end='')
     if args.loader == 'UCR':
         task_type = 'classification'
@@ -106,7 +140,10 @@ if __name__ == '__main__':
         
     elif args.loader == 'ottawa':
         task_type = 'classification'
-        train_data, train_labels, test_data, test_labels = datautils.load_ottawa(args.dataset)
+        train_data, train_labels, test_data, test_labels = datautils.load_ottawa(
+            args.dataset, 
+            feature_columns=feature_columns
+        )
         
     elif args.loader == 'forecast_csv':
         task_type = 'forecasting'
@@ -154,6 +191,11 @@ if __name__ == '__main__':
     print(f'\n训练数据信息:')
     print(f'  数据形状: {train_data.shape}')
     print(f'  数据大小: {train_data.size:,} 个元素')
+    if args.feature_columns is not None:
+        print(f'  使用的特征列: {args.feature_columns}')
+    else:
+        if args.loader == 'ottawa':
+            print(f'  使用的特征列: 全部5个特征')
     if task_type == 'classification':
         print(f'  训练样本数: {len(train_data)}')
         print(f'  测试样本数: {len(test_data)}')
@@ -189,6 +231,14 @@ if __name__ == '__main__':
     print(f'  表示维度: {args.repr_dims}')
     print(f'  最大训练长度: {args.max_train_length}')
     print(f'  时间对比损失最大长度: {max_temporal_length} (用于减少内存使用)')
+    print(f'  编码器类型: {args.encoder_type}')
+    if args.encoder_type in ['baseline', 'multiscale_wavelet']:
+        print(f'  编码器Dropout: {args.encoder_dropout}')
+        print(f'  编码器L2正则化: {args.encoder_l2_reg}')
+        if args.encoder_type == 'multiscale_wavelet':
+            print(f'  多尺度分支数: {args.num_scales}')
+            print(f'  分支通道数: {args.branch_channels}')
+            print(f'  SE Block降维比例: {args.se_reduction}')
     if args.epochs is not None:
         print(f'  训练轮数: {args.epochs}')
     elif args.iters is not None:
@@ -205,10 +255,22 @@ if __name__ == '__main__':
     print(f'\n开始训练...')
     print('=' * 60)
     
+    # 准备编码器参数
+    encoder_kwargs = {}
+    if args.encoder_type in ['baseline', 'multiscale_wavelet']:
+        encoder_kwargs['dropout'] = args.encoder_dropout
+        encoder_kwargs['l2_reg'] = args.encoder_l2_reg
+        if args.encoder_type == 'multiscale_wavelet':
+            encoder_kwargs['num_scales'] = args.num_scales
+            encoder_kwargs['branch_channels'] = args.branch_channels
+            encoder_kwargs['se_reduction'] = args.se_reduction
+    
     model = TS2Vec(
         input_dims=train_data.shape[-1],
         device=device,
-        **config
+        encoder_type=args.encoder_type,
+        **config,
+        **encoder_kwargs
     )
     loss_log = model.fit(
         train_data,

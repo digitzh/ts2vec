@@ -276,10 +276,13 @@ class TS2Vec:
         
         dataset = TensorDataset(torch.from_numpy(data).to(torch.float))
         loader = DataLoader(dataset, batch_size=batch_size)
+        total_batches = len(loader)
         
         with torch.no_grad():
             output = []
-            for batch in loader:
+            for batch_idx, batch in enumerate(loader):
+                if total_batches > 1:
+                    print(f'  编码进度: {batch_idx + 1}/{total_batches} 批次', end='\r', flush=True)
                 x = batch[0]
                 if sliding_length is not None:
                     reprs = []
@@ -343,6 +346,8 @@ class TS2Vec:
                 output.append(out)
                 
             output = torch.cat(output, dim=0)
+            if total_batches > 1:
+                print()  # 换行，结束进度显示
             
         self.net.train(org_training)
         return output.numpy()

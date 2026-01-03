@@ -16,7 +16,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch-size', type=int, default=32, help='Training batch size (for model config)')
     parser.add_argument('--repr-dims', type=int, default=320, help='Representation dimensions')
     parser.add_argument('--max-train-length', type=int, default=3000, help='Max train length')
-    parser.add_argument('--eval-protocol', type=str, default='svm', choices=['linear', 'svm', 'knn'], help='Evaluation protocol')
+    parser.add_argument('--eval-protocol', type=str, default='svm', choices=['linear', 'svm', 'knn', 'mlp'], help='Evaluation protocol')
     parser.add_argument('--feature-columns', type=str, default=None, 
                         help='Feature columns to use (comma-separated). Examples: "accelerometer" or "accelerometer,acoustic" or "0" or "0,1". Must match training configuration.')
     parser.add_argument('--encoder-type', type=str, default='dilated_conv', choices=['dilated_conv', 'baseline', 'multiscale_wavelet'],
@@ -26,6 +26,11 @@ if __name__ == '__main__':
     parser.add_argument('--num-scales', type=int, default=4, help='Number of scales for multiscale_wavelet encoder (must match training)')
     parser.add_argument('--branch-channels', type=int, default=32, help='Number of channels per branch for multiscale_wavelet encoder (must match training)')
     parser.add_argument('--se-reduction', type=int, default=4, help='SE Block reduction ratio for multiscale_wavelet encoder (must match training)')
+    parser.add_argument('--max-seq-length', type=int, default=None, help='Maximum sequence length to use (truncate sequences if longer). If None, use full sequence.')
+    parser.add_argument('--clf-lr', type=float, default=1e-3, help='Initial learning rate for classifier training (default: 1e-3)')
+    parser.add_argument('--clf-scheduler', type=str, default='cosine', choices=['cosine', 'step', 'none'], 
+                        help='Learning rate scheduler for classifier training (default: cosine)')
+    parser.add_argument('--clf-epochs', type=int, default=100, help='Number of epochs for classifier training (default: 100)')
     args = parser.parse_args()
     
     # 初始化设备
@@ -67,6 +72,12 @@ if __name__ == '__main__':
         raise ValueError(f"Unsupported loader: {args.loader}")
     print('done')
     
+    # 截取序列长度（如果指定）
+    if args.max_seq_length is not None and train_data.shape[1] > args.max_seq_length:
+        print(f'\n截取序列长度: {train_data.shape[1]} -> {args.max_seq_length}')
+        train_data = train_data[:, :args.max_seq_length, :]
+        test_data = test_data[:, :args.max_seq_length, :]
+    
     print(f'\n数据信息:')
     print(f'  训练样本数: {len(train_data)}')
     print(f'  测试样本数: {len(test_data)}')
@@ -104,6 +115,10 @@ if __name__ == '__main__':
     
     # 运行评估
     print('\n开始评估...')
+    print(f'分类器训练参数:')
+    print(f'  学习率: {args.clf_lr}')
+    print(f'  学习率调度器: {args.clf_scheduler}')
+    print(f'  训练轮数: {args.clf_epochs}')
     if task_type == 'classification':
         out, eval_res = tasks.eval_classification(
             model, 
@@ -111,7 +126,10 @@ if __name__ == '__main__':
             train_labels, 
             test_data, 
             test_labels, 
-            eval_protocol=args.eval_protocol
+            eval_protocol=args.eval_protocol,
+            clf_lr=args.clf_lr,
+            clf_scheduler=args.clf_scheduler,
+            clf_epochs=args.clf_epochs
         )
     else:
         raise ValueError(f"Unsupported task type: {task_type}")

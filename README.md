@@ -59,10 +59,18 @@ python train.py ottawa ottawa_run \
 ### 2.2 评估
 
 ```sh
-python eval.py training/ottawa__ottawa_run_20251230_234625/model.pkl \
+python eval.py training/ottawa__ottawa_run_20260102_214914/model.pkl \
     --eval-protocol svm \
     --dataset ottawa \
     --loader ottawa \
     --gpu 1 \
-    --feature-columns accelerometer
+    --feature-columns accelerometer \
+    --clf-lr 1e-3 \
+    --clf-scheduler cosine \
+    --clf-epochs 100
 ```
+
+评估参数说明：
+- `--clf-lr`: 分类器训练的初始学习率（默认: 1e-3）
+- `--clf-scheduler`: 学习率调度器类型，可选 `cosine`、`step`、`none`（默认: cosine）
+- `--clf-epochs`: 分类器训练的轮数（默认: 100）
